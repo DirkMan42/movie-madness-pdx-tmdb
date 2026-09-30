@@ -88,6 +88,8 @@ def split_temporary(parts):
 INFERRED_PLAIN = {
     'Drama*': '3 samples of 100 titles on 2026-09-30; after searching Sarandon, '
               'Wahlberg and Witherspoon, 197 carded titles all plain',
+    'Comedy': '2 samples of 100 titles on 2026-09-30 (sample_section.py); after searching '
+              'Sarandon, Wahlberg, Witherspoon and Tomlin, 200 carded titles all plain',
 }
 
 def search_query(title):
