@@ -9,6 +9,12 @@ shelf, which is one of:
   named     "Hollywood Directors > SPIELBERG, STEVEN" (name level below the term)
   mixed     "Drama", but "Drama > SARANDON, SUSAN" for a few titles
 
+Temporary shelves are displays titles rotate through: Curated, Staff Picks,
+VHS Spotlight, and every New Release and New Arrival. A card may show one in
+place of the permanent shelf ("Staff Picks") or above it ("DVD New Release >
+TV Heritage"), and some API locations are one ("New Release (Foreign)"). They
+are kept apart from the permanent shelf.
+
 Cards come from cache/ (the harness's page cache) and shelf-cards.jsonl (from
 scrape_shelves.py). Terms with no card are probed with one title search each
 (--probe), saved into the cache.
@@ -17,6 +23,7 @@ Adds to each entry:
   shelf           best known shelf text, or null
   shelf_complete  true when shelf is the full card text
   shelf_source    "card" (the entry's own card), "term" (from the table), or null
+  temporary_shelf the temporary shelf it's on now, or null
 """
 import glob, html, json, re, sys, time, urllib.parse, urllib.request
 from collections import Counter, defaultdict
@@ -59,6 +66,18 @@ def term_index(parts, term):
         if norm(p) == n:
             return i
     return None
+
+TEMPORARY = re.compile(r'^(curated|staff picks|vhs spotlight|new arrival\b.*|(.+ )?new release\b.*)$', re.I)
+
+def is_temporary(name):
+    return bool(TEMPORARY.match(norm(name)))
+
+def split_temporary(parts):
+    """Card shelf -> (leading temporary levels, the permanent rest)."""
+    k = 0
+    while k < len(parts) and is_temporary(parts[k]):
+        k += 1
+    return parts[:k], parts[k:]
 
 def search_query(title):
     t = re.sub(r'\([^)]*\)', '', title).strip()
@@ -120,15 +139,21 @@ def main():
     # Step 1: vote on each term's shelf from every card that shows it.
     votes = defaultdict(Counter)   # term -> prefix -> cards
     named = defaultdict(Counter)   # term -> prefix -> cards with a level below the term
-    labels = Counter()             # display labels shown instead of the shelf
+    labels = Counter()             # other labels shown instead of the shelf
+    temporary = Counter()          # temporary shelves on cards
     for i, parts in cards.items():
         e = entries.get(i)
         if not e:
             continue
+        temp, parts = split_temporary(parts)
+        if temp:
+            temporary[' > '.join(temp)] += 1
         for t in e.get('location', []):
+            if t in terms and is_temporary(terms[t]['name']):
+                continue
             k = term_index(parts, terms[t]['name']) if t in terms else None
             if k is None:
-                if len(e['location']) == 1:
+                if len(e['location']) == 1 and parts:
                     labels[' > '.join(parts)] += 1
                 continue
             prefix = ' > '.join(parts[:k + 1])
@@ -139,7 +164,9 @@ def main():
     table = []
     for t, info in sorted(terms.items(), key=lambda x: x[1]['name'].casefold()):
         row = {'id': t, 'name': info['name'], 'entries': len(by_term[t])}
-        if votes[t]:
+        if is_temporary(info['name']):
+            row.update(shelf=None, kind='temporary')
+        elif votes[t]:
             prefix, n = votes[t].most_common(1)[0]
             n_cards, n_named = sum(votes[t].values()), sum(named[t].values())
             # named: most titles sit under a name; mixed: only some do, so the
@@ -157,12 +184,20 @@ def main():
     rows = {r['id']: r for r in table}
 
     # Merge into the catalog pages.
-    src = Counter()
+    src, src_temp = Counter(), Counter()
     for f, es in catalog.items():
         for e in es:
             locs = e.get('location', [])
+            temp_locs = [t for t in locs if t in terms and is_temporary(terms[t]['name'])]
+            locs = [t for t in locs if t not in temp_locs]
             shelf, complete, source = None, False, None
-            parts = cards.get(e['id'])
+            temp, parts = split_temporary(cards.get(e['id']) or [])
+            if temp:
+                temp_shelf = ' > '.join(temp)
+            elif temp_locs:
+                temp_shelf = html.unescape(terms[temp_locs[0]]['name']).rstrip('*')
+            else:
+                temp_shelf = None
             if parts and any(term_index(parts, terms[t]['name']) is not None for t in locs if t in terms):
                 shelf, complete, source = ' > '.join(parts), True, 'card'
             else:
@@ -171,8 +206,10 @@ def main():
                     if r and r['shelf']:
                         shelf, complete, source = r['shelf'], r['kind'] in ('bare', 'sub-shelf'), 'term'
                         break
-            e.update(shelf=shelf, shelf_complete=complete, shelf_source=source)
+            e.update(shelf=shelf, shelf_complete=complete, shelf_source=source, temporary_shelf=temp_shelf)
             src[(source, complete)] += 1
+            if temp_shelf:
+                src_temp[(shelf is not None, complete)] += 1
         json.dump(es, open(f, 'w'))
 
     kinds = Counter()
@@ -181,7 +218,11 @@ def main():
     print(f'terms: {len(table)}; entries by term kind: {dict(kinds)}')
     if probe:
         print(f'probed {len(probes)} terms, found a card for {sum(v is not None for v in probes.values())}')
-    print(f'display labels ignored: {dict(labels)}')
+    print(f'temporary shelves on cards: {dict(temporary)}')
+    print(f'other labels ignored: {dict(labels)}')
+    print(f'entries on a temporary shelf: {sum(src_temp.values())} '
+          f'(permanent shelf known: {src_temp[(True, True)]} complete, {src_temp[(True, False)]} section only; '
+          f'unknown: {src_temp[(False, False)]})')
     print('entries:')
     for (s, c), n in sorted(src.items(), key=lambda x: -x[1]):
         print(f'  {n:6}  source={s} complete={c}')
