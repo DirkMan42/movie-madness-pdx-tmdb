@@ -15,6 +15,10 @@ Order, most entries per request first:
   3. titles on mixed shelves (Drama, Foreign > French, ...), the same way.
 
   --until HH:MM   stop at this local time (next occurrence)
+  --window HH:MM-HH:MM
+                  run only inside these local hours: exit at once if started
+                  outside them (say, after a late wake from sleep), and stop
+                  at the end
   --max N         stop after N requests
   --terms REGEX   only entries whose location name matches, e.g.
                   'director|actor|filmmaker|action heroes' (case-insensitive)
@@ -29,14 +33,22 @@ PAUSE, MAX_OFFSET = 0.4, 996
 def arg(name):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else None
 
-def deadline():
-    until = arg('--until')
-    if not until:
-        return None
-    now = datetime.datetime.now()
-    h, m = map(int, until.split(':'))
+def next_time(hhmm, now):
+    h, m = map(int, hhmm.split(':'))
     t = now.replace(hour=h, minute=m, second=0, microsecond=0)
     return t if t > now else t + datetime.timedelta(days=1)
+
+def deadline():
+    """When to stop, or None. Exits if --window says now is outside it."""
+    now = datetime.datetime.now()
+    if arg('--window'):
+        start, end = arg('--window').split('-')
+        # Inside the window when its end comes before its next start.
+        if next_time(end, now) > next_time(start, now):
+            log(f'outside the {arg("--window")} window; not starting')
+            sys.exit(0)
+        return next_time(end, now)
+    return next_time(arg('--until'), now) if arg('--until') else None
 
 def log(msg):
     print(f'{datetime.datetime.now():%H:%M:%S} {msg}', flush=True)
@@ -52,6 +64,7 @@ class Stop(Exception):
 
 def main():
     import glob
+    stop_at = deadline()   # first, so it exits before loading anything when outside --window
     entries = {e['id']: e for f in glob.glob('catalog/page*.json') for e in json.load(open(f))}
     terms = {t['id']: t['name'] for t in json.load(open('locations.json'))}
     kinds = {r['id']: r['kind'] for r in json.load(open('shelves.json'))}
@@ -70,13 +83,13 @@ def main():
     targets = {i for i, e in entries.items() if not e.get('shelf_complete') and kinds_of(e, kinds) and i not in cards}
     log(f'{len(targets)} entries to find; {len(done)} searches already done')
 
-    stop_at, max_req = deadline(), int(arg('--max') or 0)
+    max_req = int(arg('--max') or 0)
     stats = {'requests': 0, 'errors_in_row': 0}
     cards_out, queries_out = open(CARDS, 'a'), open(QUERIES, 'a')
 
     def get(params):
         if stop_at and datetime.datetime.now() >= stop_at:
-            raise Stop(f'reached {arg("--until")}')
+            raise Stop(f'reached {stop_at:%H:%M}')
         if max_req and stats['requests'] >= max_req:
             raise Stop(f'reached {max_req} requests')
         url = SEARCH + '?' + urllib.parse.urlencode(params)
