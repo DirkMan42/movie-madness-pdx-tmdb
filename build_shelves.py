@@ -8,6 +8,8 @@ shelf, which is one of:
   sub-shelf "Leviathans & Behemoths > Shark!"         (term is the last level)
   named     "Hollywood Directors > SPIELBERG, STEVEN" (name level below the term)
   mixed     "Drama", but "Drama > SARANDON, SUSAN" for a few titles
+            (a location stays plain when its only name shelves are a minority
+            that scrape_shelves.py has searched in full)
 
 Temporary shelves are displays titles rotate through: Curated, Staff Picks,
 VHS Spotlight, and every New Release and New Arrival. A card may show one in
@@ -22,7 +24,8 @@ scrape_shelves.py). Terms with no card are probed with one title search each
 Adds to each entry:
   shelf           best known shelf text, or null
   shelf_complete  true when shelf is the full card text
-  shelf_source    "card" (the entry's own card), "term" (from the table), or null
+  shelf_source    "card" (the entry's own card), "term" (from the table),
+                  "inferred" (a mixed location sampled as plain, see INFERRED_PLAIN), or null
   temporary_shelf the temporary shelf it's on now, or null
 """
 import glob, html, json, re, sys, time, urllib.parse, urllib.request
@@ -78,6 +81,14 @@ def split_temporary(parts):
     while k < len(parts) and is_temporary(parts[k]):
         k += 1
     return parts[:k], parts[k:]
+
+# Mixed locations whose uncarded titles are taken to be on the plain section:
+# every name shelf sampling turned up has been searched in full, and further
+# samples found no others.
+INFERRED_PLAIN = {
+    'Drama*': '3 samples of 100 titles on 2026-09-30; after searching Sarandon, '
+              'Wahlberg and Witherspoon, 197 carded titles all plain',
+}
 
 def search_query(title):
     t = re.sub(r'\([^)]*\)', '', title).strip()
@@ -139,6 +150,12 @@ def main():
     # Step 1: vote on each term's shelf from every card that shows it.
     votes = defaultdict(Counter)   # term -> prefix -> cards
     named = defaultdict(Counter)   # term -> prefix -> cards with a level below the term
+    unsearched = Counter()         # term -> of those, cards whose name hasn't been searched in full
+    try:   # names scrape_shelves.py has searched in full
+        searched = {json.loads(l)['key'][5:] for l in open('shelf-queries.jsonl')
+                    if json.loads(l)['key'].startswith('name:')}
+    except FileNotFoundError:
+        searched = set()
     labels = Counter()             # other labels shown instead of the shelf
     temporary = Counter()          # temporary shelves on cards
     for i, parts in cards.items():
@@ -160,6 +177,8 @@ def main():
             votes[t][prefix] += 1
             if len(parts) > k + 1:
                 named[t][prefix] += 1
+                if parts[k + 1] not in searched:
+                    unsearched[t] += 1
 
     table = []
     for t, info in sorted(terms.items(), key=lambda x: x[1]['name'].casefold()):
@@ -170,10 +189,14 @@ def main():
             prefix, n = votes[t].most_common(1)[0]
             n_cards, n_named = sum(votes[t].values()), sum(named[t].values())
             # named: most titles sit under a name; mixed: only some do, so the
-            # table can't say which of the others have one either.
-            kind = ('named' if n_named * 2 >= n_cards else 'mixed' if n_named
+            # table can't say which of the others have one either. A minority
+            # name shelf that's been searched in full has all its titles
+            # carded already, so it leaves the rest of the section plain.
+            kind = ('named' if n_named * 2 >= n_cards else 'mixed' if unsearched[t]
                     else 'bare' if ' > ' not in prefix else 'sub-shelf')
             row.update(shelf=prefix, kind=kind, cards=n_cards, named_cards=n_named)
+            if n_named and kind != 'named':
+                row['unsearched_named_cards'] = unsearched[t]
             others = {p: c for p, c in votes[t].items() if p != prefix}
             if others:
                 row['other_shelves'] = others
@@ -205,6 +228,8 @@ def main():
                     r = rows.get(t)
                     if r and r['shelf']:
                         shelf, complete, source = r['shelf'], r['kind'] in ('bare', 'sub-shelf'), 'term'
+                        if r['name'] in INFERRED_PLAIN and r['kind'] != 'named':
+                            complete, source = True, 'inferred'
                         break
             e.update(shelf=shelf, shelf_complete=complete, shelf_source=source, temporary_shelf=temp_shelf)
             src[(source, complete)] += 1
