@@ -9,8 +9,9 @@ shelf, which is one of:
   named     "Hollywood Directors > SPIELBERG, STEVEN" (name level below the term)
   mixed     "Drama", but "Drama > SARANDON, SUSAN" for a few titles
 
-Cards come from cache/ (the harness's page cache). Terms with no cached card
-are probed with one title search each (--probe), saved into the same cache.
+Cards come from cache/ (the harness's page cache) and shelf-cards.jsonl (from
+scrape_shelves.py). Terms with no card are probed with one title search each
+(--probe), saved into the cache.
 
 Adds to each entry:
   shelf           best known shelf text, or null
@@ -80,6 +81,12 @@ def main():
     cards = {}
     for f in glob.glob(CACHE + '*moviemadness.org%2Fsearch*'):
         cards.update(parse_cards(open(f).read()))
+    try:   # cards saved by scrape_shelves.py
+        for line in open('shelf-cards.jsonl'):
+            c = json.loads(line)
+            cards[c['id']] = c['parts']
+    except FileNotFoundError:
+        pass
 
     def shows(i, t):
         return t in terms and term_index(cards[i], terms[t]['name']) is not None
