@@ -13,6 +13,7 @@ Order, most entries per request first:
      along the way are queued too.
   2. titles on name shelves: one title search per entry still unseen.
   3. titles on mixed shelves (Drama, Foreign > French, ...), the same way.
+  4. with --no-location, titles with no usable location, the same way.
 
   --until HH:MM   stop at this local time (next occurrence)
   --window HH:MM-HH:MM
@@ -22,6 +23,8 @@ Order, most entries per request first:
   --max N         stop after N requests
   --terms REGEX   only entries whose location name matches, e.g.
                   'director|actor|filmmaker|action heroes' (case-insensitive)
+  --no-location   also titles with no usable location (none, or one no card
+                  has shown) and not on a temporary display
 """
 import datetime, html, json, os, re, sys, time, urllib.parse, urllib.request
 from collections import deque
@@ -80,7 +83,9 @@ def main():
         cards[c['id']] = c['parts']
     done = {q['key'] for q in load_jsonl(QUERIES)}
 
-    targets = {i for i, e in entries.items() if not e.get('shelf_complete') and kinds_of(e, kinds) and i not in cards}
+    lost = '--no-location' in sys.argv
+    targets = {i for i, e in entries.items() if not e.get('shelf_complete') and i not in cards
+               and (kinds_of(e, kinds) or lost and e.get('shelf') is None and not e.get('temporary_shelf'))}
     log(f'{len(targets)} entries to find; {len(done)} searches already done')
 
     max_req = int(arg('--max') or 0)
@@ -172,7 +177,8 @@ def main():
             n_done += 1
             if n_done % 25 == 0:
                 log(f'  {n_done} names, {len(names)} queued, {len(targets)} entries left, {stats["requests"]} requests')
-        for phase, kind in (('phase 2: titles on name shelves', 'named'), ('phase 3: titles on mixed shelves', 'mixed')):
+        for phase, kind in (('phase 2: titles on name shelves', 'named'), ('phase 3: titles on mixed shelves', 'mixed'),
+                            ('phase 4: titles with no usable location', None)):
             todo = sorted((i for i in targets if kinds_of(entries[i], kinds) == kind), key=lambda i: entries[i]['title']['rendered'])
             log(f'{phase} ({len(todo)} entries)')
             for n, i in enumerate(todo, 1):

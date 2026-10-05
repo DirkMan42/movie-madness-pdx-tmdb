@@ -207,6 +207,7 @@ def main():
         table.append(row)
     json.dump(table, open('shelves.json', 'w'), indent=1, ensure_ascii=False)
     rows = {r['id']: r for r in table}
+    sections = {r['shelf'].split(' > ')[0] for r in table if r['shelf']}
 
     # Merge into the catalog pages.
     src, src_temp = Counter(), Counter()
@@ -223,7 +224,9 @@ def main():
                 temp_shelf = html.unescape(terms[temp_locs[0]]['name']).rstrip('*')
             else:
                 temp_shelf = None
-            if parts and any(term_index(parts, terms[t]['name']) is not None for t in locs if t in terms):
+            usable = [t for t in locs if rows.get(t) and rows[t]['shelf']]
+            if parts and (not usable and parts[0] in sections   # no location to check the card against
+                          or any(term_index(parts, terms[t]['name']) is not None for t in locs if t in terms)):
                 shelf, complete, source = ' > '.join(parts), True, 'card'
             else:
                 for t in locs:
