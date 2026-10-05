@@ -23,6 +23,10 @@ Order, most entries per request first:
   --max N         stop after N requests
   --terms REGEX   only entries whose location name matches, e.g.
                   'director|actor|filmmaker|action heroes' (case-insensitive)
+  --ids FILE      only these entry ids (whitespace-separated), e.g. changed-ids.txt
+                  from update_catalog.py: searched again even if done before,
+                  since a changed title's old card may be out of date; no
+                  name searches
   --no-location   also titles with no usable location (none, or one no card
                   has shown) and not on a temporary display
 """
@@ -84,7 +88,8 @@ def main():
     done = {q['key'] for q in load_jsonl(QUERIES)}
 
     lost = '--no-location' in sys.argv
-    targets = {i for i, e in entries.items() if not e.get('shelf_complete') and i not in cards
+    only = {int(i) for i in open(arg('--ids')).read().split()} if arg('--ids') else None
+    targets = {i for i, e in entries.items() if not e.get('shelf_complete') and (i not in cards if only is None else i in only)
                and (kinds_of(e, kinds) or lost and e.get('shelf') is None and not e.get('temporary_shelf'))}
     log(f'{len(targets)} entries to find; {len(done)} searches already done')
 
@@ -139,9 +144,9 @@ def main():
         cards_out.flush()
         return new
 
-    def search(key, params, keep_paging, max_pages=MAX_OFFSET // 12 + 1):
+    def search(key, params, keep_paging, max_pages=MAX_OFFSET // 12 + 1, again=False):
         """Pages one search while keep_paging(cards) holds. Returns targets found."""
-        if key in done:
+        if key in done and not again:
             return 0
         found = 0
         for offset in range(0, 12 * max_pages, 12):
@@ -157,10 +162,10 @@ def main():
         done.add(key)
         return found
 
-    # Phase 1 seeds: every name level already on a card.
+    # Phase 1 seeds: every name level already on a card (none with --ids: just the titles).
     names, queued = deque(), set()
     for i, parts in cards.items():
-        if i in entries:
+        if i in entries and only is None:
             for n in names_on(parts, entries[i]):
                 if n not in queued:
                     queued.add(n)
@@ -186,7 +191,8 @@ def main():
                     continue
                 q = search_query(html.unescape(entries[i]['title']['rendered']))
                 search(f'title:{q.casefold()}', {'query': q, 'search_by': 'Title'},
-                       lambda got, i=i: i not in got, max_pages=3)   # more pages only while the entry is missing
+                       lambda got, i=i: i not in got, max_pages=3,   # more pages only while the entry is missing
+                       again=only is not None)   # a changed title's earlier search is out of date
                 if n % 250 == 0:
                     log(f'  {n}/{len(todo)} titles, {len(targets)} entries left, {stats["requests"]} requests')
         log('all phases finished')
