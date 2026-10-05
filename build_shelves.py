@@ -94,10 +94,12 @@ INFERRED_PLAIN = {
 
 def search_query(title):
     t = re.sub(r'\([^)]*\)', '', title).strip()
-    m = re.match(r'(.*), (The|A|An)$', t)
+    # "Night Agent, The: Season One" -> "The Night Agent: Season One"
+    m = re.match(r'(.*?), (The|A|An)($|[:/…–].*|\s[–/].*)', t)
     if m:
-        t = f'{m.group(2)} {m.group(1)}'
-    return re.sub(r'[:\'"“”!?]', '', t).strip()
+        t = f'{m.group(2)} {m.group(1)}{m.group(3)}'
+    t = re.sub(r'[\'"“”!?]', '', t.replace(':', ' '))
+    return re.sub(r'\s+', ' ', t).strip()
 
 def main():
     probe = '--probe' in sys.argv
