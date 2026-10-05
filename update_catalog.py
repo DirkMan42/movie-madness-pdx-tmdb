@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Brings catalog/ up to date with rentals the site has added or changed since
-the last run, using the API's modified_after filter: a few requests a week
+the last run, using the API's modified_after filter: a few requests a day
 instead of the ~1,000 a full pass takes.
 
 The site applies its changes in one batch each morning (around 9:25), and
