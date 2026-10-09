@@ -20,14 +20,15 @@ when a rental has a term id they lack.
 
 Saves the newest modified time seen in catalog-updated.json.
 """
-import glob, html, json, os, sys, time, urllib.parse, urllib.request
+import glob, html, json, os, re, sys, time, urllib.parse, urllib.request
 from merge_details import FIELDS, load_terms, names_for
 from build_shelves import UA
 
 API = 'https://www.moviemadness.org/wp-json/wp/v2/'
 STATE, CHANGED = 'catalog-updated.json', 'changed-ids.txt'
+MEDIA_UPDATES = 'catalog-media/updates.jsonl'   # beside fetch_media.py's pages; a later line replaces an earlier one
 ADDED = 'catalog/page0.json'   # numbered for build_shelves.py's sort; fetch_catalog.sh starts at page1
-FETCH = 'id,slug,title,location,format,rating,date,genre,language,modified'
+FETCH = 'id,slug,title,location,format,rating,date,genre,language,modified,featured_media,content'
 PAUSE = 0.4
 
 def log(msg):
@@ -60,6 +61,23 @@ def write_json(f, data):
         json.dump(data, out, ensure_ascii=False)
     os.replace(tmp, f)
 
+def poster_name(url):
+    """"f9TOb5anVwZeSbYjU1qNxPk3KUk.jpg" from .../uploads/2025/03/f9TOb5anVwZeSbYjU1qNxPk3KUk-3.jpg.
+    WordPress adds -1, -2, ... when the same file is uploaded again; TMDB names have no hyphen."""
+    return re.sub(r'-\d+(?=\.\w+$)', '', url.rsplit('/', 1)[1]) if url else None
+
+def posters_for(media_ids):
+    """Image id -> poster name, one request per 100 ids."""
+    ids, out = sorted(set(i for i in media_ids if i)), {}
+    for n in range(0, len(ids), 100):
+        rows, _, _ = get('media', {'include': ','.join(map(str, ids[n:n + 100])), 'per_page': 100, '_fields': 'id,source_url'})
+        out.update({m['id']: poster_name(m['source_url']) for m in rows})
+    return out
+
+def text(rendered):
+    """Plain text of a rendered description."""
+    return re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', rendered))).strip()
+
 def refresh_terms(changed):
     """Fetches the term tables again for any taxonomy with ids they don't have."""
     locs = {t['id'] for t in json.load(open('locations.json'))}
@@ -90,10 +108,18 @@ def main():
     if ADDED not in pages:
         pages[ADDED] = []
     where = {e['id']: (f, n) for f, es in pages.items() for n, e in enumerate(es)}
+    posters = posters_for(c['featured_media'] for c in changed)
+    if changed:   # descriptions stay out of catalog/; resolve_tmdb.py reads them from here
+        os.makedirs('catalog-media', exist_ok=True)
+        with open(MEDIA_UPDATES, 'a') as out:
+            for c in changed:
+                out.write(json.dumps({'id': c['id'], 'poster': posters.get(c['featured_media']),
+                                      'description': text(c['content']['rendered'])}, ensure_ascii=False) + '\n')
     new, moved, edited = [], [], 0
     for c in changed:
         fields = {'id': c['id'], 'slug': c['slug'], 'title': c['title'],
-                  'location': c['location'], 'location_names': [loc_names.get(i) for i in c['location']]}
+                  'location': c['location'], 'location_names': [loc_names.get(i) for i in c['location']],
+                  'poster': posters.get(c['featured_media'])}   # resolve_tmdb.py turns it into `tmdb`
         for tax, field in FIELDS.items():   # the API's "date" is the year taxonomy, not the post date
             fields[field] = names_for(c.get(tax, []), terms[tax])
         if c['id'] in where:

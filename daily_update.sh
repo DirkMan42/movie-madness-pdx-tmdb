@@ -9,5 +9,6 @@ cd "$(dirname "$0")" || exit 1
     python3 build_shelves.py > /dev/null &&
     python3 scrape_shelves.py --ids changed-ids.txt --no-location &&
     python3 build_shelves.py | sed -n '/^entries:/,$p' &&
+    python3 resolve_tmdb.py &&
     python3 export_vault.py "$HOME/Movie Madness"
 } >> update.log 2>&1
