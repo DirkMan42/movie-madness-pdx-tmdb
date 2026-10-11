@@ -15,7 +15,8 @@ one TMDB shows first.
 A poster match is the entry the store linked the title to, exactly; where the
 store linked the wrong one, so does this. TMDB has since dropped some posters
 the store still shows; those fall back to the single search result with the
-same title and year, if there is exactly one (tmdb_source "title").
+shelf's director or actor in its credits (tmdb_source "credits"), or with the
+same title and year (tmdb_source "title").
 
 The store shows the wrong cover on a few percent of rentals, so every id is
 checked against the titles TMDB has for it (tmdb-titles.jsonl): an id whose
@@ -25,7 +26,9 @@ Rentals with no usable cover are searched by title and settled by what else is
 known: the shelf's director or actor being in the credits (tmdb_source
 "credits"), the shelf's language with the year and a fitting title
 ("language"), or the same title and year ("title"). Those results are kept in
-tmdb-by-title.jsonl.
+tmdb-by-title.jsonl. Where a match shows TMDB itself is probably wrong (an
+entry made in the shelf's country but listed under another language), it is
+listed in tmdb-corrections.csv to submit to TMDB.
 
 A rental still without an id takes the one its other editions have: rentals
 with the same title and year, when they agree (tmdb_source "edition").
@@ -37,7 +40,7 @@ looks up new posters. The TMDB token (API Read Access Token) is read from
   --max N    stop after N TMDB requests
   --retry    look up posters again that found nothing before
 """
-import difflib, fcntl, glob, html, json, os, re, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import csv, difflib, fcntl, glob, html, json, os, re, sys, threading, time, unicodedata, urllib.error, urllib.parse, urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from build_shelves import search_query
@@ -46,6 +49,7 @@ from update_catalog import write_json
 
 TOKEN_FILE = os.path.expanduser('~/.config/mmboxmonkey/tmdb-token')
 RESULTS, TITLES, BY_TITLE = 'tmdb-posters.jsonl', 'tmdb-titles.jsonl', 'tmdb-by-title.jsonl'
+CORRECTIONS = 'tmdb-corrections.csv'   # what looks wrong on TMDB itself, to submit there
 API = 'https://api.themoviedb.org/3/'
 PAUSE, LISTS = 0.05, 6   # seconds between a worker's requests; poster lists to open per poster
 WORKERS = 6              # about 25 requests a second in all; TMDB allows around 50 per IP
@@ -61,6 +65,20 @@ LANGUAGES = {
     'Filipino': 'tl', 'Indonesian': 'id', 'Belgian': 'fr nl', 'Swiss': 'fr de it',
 }
 
+# The same shelves -> production country codes, for when TMDB's language looks wrong.
+COUNTRIES = {
+    'French': 'FR BE CH', 'Japanese': 'JP', 'Japanese Horror': 'JP', 'Samurai Films': 'JP',
+    'Chinese / Hong Kong': 'CN HK TW', 'Italian': 'IT', 'German': 'DE AT CH DD', 'Spanish': 'ES',
+    'Latin American': 'MX AR BR CL CO CU PE UY VE BO EC PY CR GT DO PA', 'Korean': 'KR', 'Russian': 'RU SU',
+    'Swedish': 'SE', 'Danish': 'DK', 'Polish': 'PL', 'Czech': 'CZ CS XC SK', 'Czech Animation': 'CZ CS XC SK',
+    'Indian': 'IN', 'Iranian': 'IR', 'Dutch': 'NL BE', 'Finnish': 'FI', 'Hungarian': 'HU', 'Norwegian': 'NO',
+    'Greek': 'GR', 'Turkish': 'TR', 'Thai': 'TH', 'Brazilian': 'BR', 'Portuguese': 'PT', 'Israeli': 'IL',
+    'Vietnamese': 'VN', 'Yugoslavian': 'YU RS HR SI BA MK ME', 'Romanian': 'RO', 'Icelandic': 'IS',
+    'Filipino': 'PH', 'Indonesian': 'ID', 'Belgian': 'BE', 'Swiss': 'CH',
+}
+SEASON = re.compile(r'\b(season|series)\s*\d+|\b\d+(st|nd|rd|th)\s+season|\bcomplete\s+(series|season)'
+                    r'|\b(season|series)\s+(one|two|three|four|five|six|seven|eight|nine|ten)\b|\bfinal\s+season', re.I)
+
 class Stop(Exception):
     pass
 
@@ -71,9 +89,30 @@ def queries(title):
     series = re.sub(r'\s+[–-]?\s*(Vol\.?|Volume|Season|Series|Set|Collection|Complete|Disc)\b.*', '', first, flags=re.I).strip(' –-')
     return [v for v in dict.fromkeys([q, first, series, re.sub(r'\s+\d{4}$', '', series)]) if v]
 
+ODD_LETTERS = str.maketrans({'ø': 'o', 'ł': 'l', 'đ': 'd', 'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ð': 'd', 'þ': 'th', 'ı': 'i'})
+
+def fold(text):
+    """Lower case without accents: "François" and "FRANCOIS" alike."""
+    t = unicodedata.normalize('NFKD', text.casefold().translate(ODD_LETTERS))
+    return ''.join(c for c in t if not unicodedata.combining(c))
+
 def plain(title):
-    """A title for comparing: letters and digits only, "&" as "and"."""
-    return re.sub(r'[^a-z0-9]+', '', title.casefold().replace('&', 'and'))
+    """A title for comparing: letters and digits only, no accents, "&" as "and"."""
+    return re.sub(r'[^a-z0-9]+', '', fold(title).replace('&', 'and'))
+
+def name_words(name):
+    return frozenset(re.findall(r'[a-z0-9]+', fold(name)))
+
+def same_person(person, credit):
+    """Whether a shelf's person (a set of name words) is a credited name. Word order
+    doesn't count ("PARK, CHAN-WOOK" is "Park Chan-wook"), a credit may be longer
+    ("LEE, DANNY" is "Danny Lee Sau-Yin"), initials may be missing, and spellings may
+    differ a little ("PARADJANOV" is "Parajanov")."""
+    core = frozenset(w for w in person if len(w) > 1) or person
+    if core <= credit:
+        return True
+    a, b = ''.join(sorted(person)), ''.join(sorted(credit))
+    return len(credit) > 1 and abs(len(a) - len(b)) <= 2 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.88
 
 def tmdb_titles(api, tmdb):
     """Every title TMDB lists for an entry: its own, the original, alternatives and translations."""
@@ -115,13 +154,46 @@ def title_fits(title, tmdb_titles):
                 return True
     return False
 
-def shelf_person(e):
-    """The director or actor a rental is shelved under ("first last"), from "LAST, FIRST (WRITTEN BY)"."""
+def shelf_countries(e):
+    """Production country codes that fit a rental's foreign shelf."""
+    parts = (e.get('shelf') or '').split(' > ')
+    return set(COUNTRIES.get(parts[1], '').split()) if len(parts) > 1 and parts[0] == 'Foreign' else set()
+
+def write_corrections():
+    """Lists what looks wrong on TMDB itself, to submit there: entries matched by title,
+    year and production country whose original language is neither the country's nor
+    one TMDB says is spoken in them."""
+    # Co-productions are often rightly in another language (a Haneke film in French on
+    # the German shelf). Listed are only those where TMDB disagrees with itself: the
+    # original language isn't one it says is spoken, and the shelf's language is.
+    rows = {r['tmdb']: r['tmdb_error'] for r in load_jsonl(BY_TITLE) if r.get('tmdb_error') and r.get('tmdb')
+            and r['tmdb_error']['now'] not in r['tmdb_error']['spoken']
+            and set(r['tmdb_error']['expected']) & set(r['tmdb_error']['spoken'])}
+    with open(CORRECTIONS, 'w', newline='') as out:
+        w = csv.writer(out)
+        w.writerow(['tmdb', 'url', 'title', 'year', 'field', 'value on TMDB', 'expected', 'production countries',
+                    'spoken languages', 'Movie Madness shelf'])
+        for tmdb, x in sorted(rows.items(), key=lambda kv: (kv[1]['shelf'] or '', kv[1]['title'] or '')):
+            w.writerow([tmdb, f'https://www.themoviedb.org/{tmdb}', x['title'], x['year'], x['field'], x['now'],
+                        ' or '.join(x['expected']), ' '.join(x['countries']), ' '.join(l for l in x['spoken'] if l), x['shelf']])
+    log(f'{len(rows)} possible TMDB errors listed in {CORRECTIONS}')
+
+def shelf_people(e):
+    """The directors or actors a rental is shelved under, each a set of name words:
+    one from "LAST, FIRST (WRITTEN BY)", two from "COEN, ETHAN AND JOEL". None for
+    shelves that only look like names ("COREYS, THE")."""
     level = (e.get('shelf') or '').rsplit(' > ', 1)[-1] if ' > ' in (e.get('shelf') or '') else ''
     if ',' not in level or level.upper() != level:
-        return None
+        return []
     last, first = re.sub(r'\(.*', '', level).split(',', 1)
-    return plain(first + last) or None
+    firsts = [f for f in re.split(r'\s+(?:AND|&)\s+', first.strip()) if f.strip()]
+    if not firsts or first.strip() in ('THE', 'A', 'AN'):
+        return []
+    return [name_words(f + ' ' + last) for f in firsts]
+
+def shelf_person(e):
+    """The same as one string, for lookup_key."""
+    return '+'.join(sorted(''.join(sorted(p)) for p in shelf_people(e))) or None
 
 def shelf_languages(e):
     """TMDB language codes for a rental on a foreign country's shelf; none for English-speaking ones."""
@@ -187,6 +259,12 @@ def main():
                 log(f'  error {ex} on {path}')
         raise Stop(f'giving up on {path}')
 
+    def credits_have(key, people):
+        """Whether any of a shelf's people is in a TMDB entry's cast or crew."""
+        credits = api(key + ('/credits' if key.startswith('movie') else '/aggregate_credits'))
+        names = {name_words(p.get('name') or '') for p in credits.get('cast', []) + credits.get('crew', [])}
+        return any(same_person(who, n) for who in people for n in names)
+
     def resolve(poster, entries):
         """(tmdb, how) for one poster, from the titles of the rentals that use it."""
         want, candidates = '/' + poster, {}
@@ -214,18 +292,30 @@ def main():
         for key in by_year[:LISTS]:
             if any(p.get('file_path') == want for p in api(key + '/images').get('posters', [])):
                 return key, 'poster list'
-        # TMDB has dropped some posters the store still shows. Then take the one
-        # result with the same title and year, if there is exactly one.
-        same = [k for k, (year, titles) in candidates.items() if year in years and titles & {plain(q) for q in tried}]
+        # TMDB has dropped some posters the store still shows. Then, as for rentals
+        # with no cover: the one result with the shelf's director or actor in its
+        # credits, or else the one with the same title and year that doesn't lack them.
+        people, lacking = {p for e in entries for p in shelf_people(e)}, set()
+        if people:
+            hits = [k for k in by_year[:5] if credits_have(k, people) or lacking.add(k)]
+            if len(hits) == 1:
+                return hits[0], 'credits'
+        same = [k for k, (year, titles) in candidates.items()
+                if year in years and k not in lacking and titles & {plain(q) for q in tried}]
         return (same[0], 'title and year') if len(same) == 1 else (None, None)
 
-    def by_title(e):
+    def title_rules(e, lacking):
         """(tmdb, how) for a rental with no usable cover, from a title search and what
         else is known about it. Each rule was checked against rentals with poster ids
         and disagreed with under 2% of them:
           credits   the one result with the shelf's director or actor in its credits
           language  the one result in the shelf's language, within a year, whose title fits
-          title and year  the one result with the same title, within a year"""
+          title and year  the one result with the same title, within a year
+        A title naming a season or series only matches shows; a result whose credits
+        lack the shelf's person is out; and on a foreign shelf a result in another
+        language only counts if it was made in that country, in which case TMDB's
+        language is probably wrong and the third value says so. Results refused for
+        lacking the shelf's person are added to `lacking`."""
         found, years = {}, [int(y) for y in e.get('year') or [] if y.isdigit()]
         for q in queries(e['title']['rendered']):
             for r in api('search/multi', query=q, include_adult='true').get('results', []):
@@ -236,23 +326,49 @@ def main():
             return y.isdigit() and any(abs(int(y) - x) <= 1 for x in years)
         def names(r):
             return [r[k] for k in ('title', 'name', 'original_title', 'original_name') if r.get(k)]
-        who = shelf_person(e)
+        # A title that names a season or series is a show, never a film of the same name.
+        if SEASON.search(html.unescape(e['title']['rendered'])):
+            found = {k: v for k, v in found.items() if k.startswith('tv/')}
+        who = shelf_people(e)
         if who:
-            hits = []
-            for key in sorted(found, key=lambda k: not near(found[k][1]))[:5]:
-                credits = api(key + ('/credits' if key.startswith('movie') else '/aggregate_credits'))
-                if who in {plain(p.get('name') or '') for p in credits.get('cast', []) + credits.get('crew', [])}:
-                    hits.append(key)
+            # A result without them is not this shelf's film, whatever its title.
+            hits = [k for k in sorted(found, key=lambda k: not near(found[k][1]))[:5]
+                    if credits_have(k, who) or lacking.add(k)]
             if len(hits) == 1:
-                return hits[0], 'credits'
+                return hits[0], 'credits', None
         langs = shelf_languages(e)
         if langs:
             hits = [k for k, (q, r) in found.items() if r.get('original_language') in langs and near(r)
-                    and title_fits(e['title']['rendered'], names(r))]
+                    and k not in lacking and title_fits(e['title']['rendered'], names(r))]
             if len(hits) == 1:
-                return hits[0], 'language'
-        hits = [k for k, (q, r) in found.items() if near(r) and loose(q) in {loose(x) for x in names(r)}]
-        return (hits[0], 'title and year') if len(hits) == 1 else (None, None)
+                return hits[0], 'language', None
+        hits = [k for k, (q, r) in found.items() if near(r) and k not in lacking
+                and loose(q) in {loose(x) for x in names(r)}]
+        if len(hits) != 1:
+            return None, None, None
+        r = found[hits[0]][1]
+        if langs and r.get('original_language') not in langs:
+            # Same title and year but another language: a different film, unless TMDB has
+            # the language wrong, which its production countries can show.
+            d = api(hits[0])
+            made_in = {c.get('iso_3166_1') for c in d.get('production_countries', [])} | set(d.get('origin_country') or [])
+            if not made_in & shelf_countries(e):
+                return None, None, None
+            return hits[0], 'title and year', {
+                'field': 'original_language', 'now': r.get('original_language'), 'shelf': e.get('shelf'),
+                'expected': sorted(langs), 'countries': sorted(c for c in made_in if c),
+                'spoken': [l.get('iso_639_1') for l in d.get('spoken_languages', [])],
+                'title': d.get('title') or d.get('name'),
+                'year': (d.get('release_date') or d.get('first_air_date') or '')[:4]}
+        return hits[0], 'title and year', None
+
+    def by_title(e):
+        """title_rules' answer, with what to keep beside it: a likely TMDB error, and
+        when nothing matched, the results refused for lacking the shelf's person."""
+        lacking = set()
+        tmdb, how, tmdb_error = title_rules(e, lacking)
+        return tmdb, how, {**({'tmdb_error': tmdb_error} if tmdb_error else {}),
+                           **({'lacking': sorted(lacking)} if lacking and not tmdb else {})}
 
     def catalog():
         return {f: json.load(open(f)) for f in glob.glob('catalog/page*.json')}
@@ -323,13 +439,15 @@ def main():
                 if e['tmdb'] and e.get('year'):
                     editions[edition_key(e)].add(e['tmdb'])
         # A rental with no id of its own takes the id of another edition: one with the
-        # same title and year, when all of those that have an id agree on it.
+        # same title and year, when all of those that have an id agree on it. Rentals
+        # on a director's or actor's shelf wait: their own search comes first, and
+        # may have refused that very film for lacking the person.
         for es in pages.values():
             for e in es:
-                if not e['tmdb'] and e.get('year') and len(editions.get(edition_key(e), ())) == 1:
+                if not e['tmdb'] and not shelf_people(e) and e.get('year') and len(editions.get(edition_key(e), ())) == 1:
                     (e['tmdb'],), e['tmdb_source'] = editions[edition_key(e)], 'edition'
                     copied += 1
-        return rejected, copied
+        return rejected, copied, editions
 
     # Rentals still without an id (no cover, or the wrong one) are searched by title.
     pages = catalog()
@@ -339,7 +457,9 @@ def main():
         for e in es:
             if not e['tmdb'] and (e.get('year') or shelf_person(e)):
                 groups.setdefault(lookup_key(e), e)
-    titled = {r['key']: (r['tmdb'], r['how']) for r in load_jsonl(BY_TITLE)}
+    titled, refused = {}, {}   # a later line for the same key replaces an earlier one
+    for r in load_jsonl(BY_TITLE):
+        titled[r['key']], refused[r['key']] = (r['tmdb'], r['how']), set(r.get('lacking', ()))
     todo = [k for k in groups if k not in titled or '--retry' in sys.argv and titled[k][0] is None]
     log(f'{len(groups)} titles without an id; {len(todo)} to search for')
     found, pool = 0, ThreadPoolExecutor(WORKERS)
@@ -347,10 +467,10 @@ def main():
     try:
         with open(BY_TITLE, 'a') as out:
             for n, done in enumerate(as_completed(searches), 1):
-                key, (tmdb, how) = searches[done], done.result()
-                titled[key] = tmdb, how
+                key, (tmdb, how, extra) = searches[done], done.result()
+                titled[key], refused[key] = (tmdb, how), set(extra.get('lacking', ()))
                 found += bool(tmdb)
-                out.write(json.dumps({'key': key, 'tmdb': tmdb, 'how': how}) + '\n')
+                out.write(json.dumps({'key': key, 'tmdb': tmdb, 'how': how, **extra}, ensure_ascii=False) + '\n')
                 out.flush()
                 if n % 2000 == 0:
                     log(f'  {n}/{len(todo)} titles, {found} matched, {stats["requests"]} requests')
@@ -360,9 +480,11 @@ def main():
     pool.shutdown(cancel_futures=True)
     log(f'{found} matched by title this run; {stats["requests"]} requests in all')
 
+    write_corrections()
+
     # Read the catalog again before writing: a long run may overlap the daily update.
     pages = catalog()
-    rejected, copied = assign(pages)
+    rejected, copied, editions = assign(pages)
     have = by_search = 0
     for f, es in pages.items():
         for e in es:
@@ -370,6 +492,11 @@ def main():
             if tmdb and tmdb != e['tmdb_rejected']:
                 e['tmdb'], e['tmdb_source'] = tmdb, source(how)
                 by_search += 1
+            elif not e['tmdb'] and shelf_people(e) and e.get('year') and len(editions.get(edition_key(e), ())) == 1:
+                (tmdb,) = editions[edition_key(e)]   # the edition copy they waited for
+                if tmdb not in refused.get(lookup_key(e), ()):
+                    e['tmdb'], e['tmdb_source'] = tmdb, 'edition'
+                    copied += 1
             have += bool(e['tmdb'])
         write_json(f, es)
     log(f'tmdb written to the catalog: {have} rentals have one ({copied} from another edition, {by_search} by title search); '
