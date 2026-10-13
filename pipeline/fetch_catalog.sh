@@ -1,5 +1,5 @@
 #!/bin/bash
-cd "$(dirname "$0")" && mkdir -p catalog && cd catalog
+mkdir -p "$(dirname "$0")/../data/catalog" && cd "$(dirname "$0")/../data/catalog"
 for p in $(seq 1 996); do
   f=page$p.json
   [ -s "$f" ] && continue

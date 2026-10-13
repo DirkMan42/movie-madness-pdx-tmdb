@@ -1,7 +1,7 @@
 #!/bin/bash
 # Pages the catalog again for each entry's format, rating, year, genre and language
 # term ids, plus the term tables that name them (resumable).
-cd "$(dirname "$0")" && mkdir -p catalog-details/terms && cd catalog-details
+mkdir -p "$(dirname "$0")/../data/catalog-details/terms" && cd "$(dirname "$0")/../data/catalog-details"
 UA='Mozilla/5.0 (X11; Linux x86_64) mmboxmonkey-test'
 for tax in format rating date genre language; do
   for p in 1 2; do

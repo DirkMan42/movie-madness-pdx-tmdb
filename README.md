@@ -8,7 +8,7 @@ It was built for [mmboxmonkey](https://github.com/tjsander/mmboxmonkey), a users
 
 ## The lookup files
 
-`export_api.py` writes them to `api/`:
+`pipeline/export_api.py` writes them to `api/`:
 
 ```
 api/index.json                counts, time of the newest site change included, data notice
@@ -35,6 +35,16 @@ NNN is `id % 1000`, zero-padded to three digits. All 2,000 files exist, so a fil
 
 About three quarters of the store's ~99,600 rentals have a TMDB id. A rental in the files is in the store's collection; that doesn't mean a copy is on the shelf today.
 
+## Layout
+
+```
+pipeline/   the scripts
+data/       the fetched catalog and everything worked out from it (ignored by git)
+api/        the lookup files, written by export_api.py (ignored by git)
+```
+
+The Python scripts read and write the current folder, so run them from `data/`, e.g. `cd data && python3 ../pipeline/resolve_tmdb.py`. The shell scripts go there themselves.
+
 ## How it works
 
 | Script | |
@@ -47,7 +57,7 @@ About three quarters of the store's ~99,600 rentals have a TMDB id. A rental in 
 | `export_api.py` | Writes `api/` |
 | `daily_update.sh` | Runs the daily steps in order |
 
-`resolve_tmdb.py` needs a TMDB API Read Access Token in `~/.config/mmboxmonkey/tmdb-token`. The fetched catalog and everything generated from it are ignored by git.
+`resolve_tmdb.py` needs a TMDB API Read Access Token in `~/.config/mmboxmonkey/tmdb-token`.
 
 The store's site is a small nonprofit's: the scripts are throttled and resumable, and once caught up the daily update is a handful of requests.
 

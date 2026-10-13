@@ -9,7 +9,7 @@ import json
 import os
 from collections import Counter
 
-here = os.path.dirname(os.path.abspath(__file__))
+here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 names = {t["id"]: t["name"] for t in json.load(open(os.path.join(here, "locations.json")))}
 
 loc_by_id = {}

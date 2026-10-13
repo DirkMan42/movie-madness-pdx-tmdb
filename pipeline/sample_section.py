@@ -2,7 +2,7 @@
 """Tests whether a mixed section's uncarded titles are on its plain shelf, as
 done for Drama before adding it to build_shelves.INFERRED_PLAIN.
 
-  python3 sample_section.py 'Comedy'
+  python3 ../pipeline/sample_section.py 'Comedy'
 
 1. Searches, in full, every name shelf seen under the section that hasn't
    been searched yet (as scrape_shelves.py phase 1 would).

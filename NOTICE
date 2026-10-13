@@ -4,7 +4,7 @@ This project is two different things, and they are licensed differently.
    is licensed under the MIT License. See LICENSE.
 
 2. THE CATALOG DATA that the code fetches, and any files generated from it
-   (including the TMDB-id lookup files written by export_api.py and
+   (including the TMDB-id lookup files written by pipeline/export_api.py and
    anything published from them), is NOT the author's to license and is NOT
    covered by the MIT grant. It is derived from third parties and remains
    subject to their terms:

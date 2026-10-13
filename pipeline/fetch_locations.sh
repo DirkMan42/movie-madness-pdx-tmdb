@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pages the catalog again for each entry's location term ids (resumable).
-cd "$(dirname "$0")" && mkdir -p catalog-loc && cd catalog-loc
+mkdir -p "$(dirname "$0")/../data/catalog-loc" && cd "$(dirname "$0")/../data/catalog-loc"
 for p in $(seq 1 996); do
   f=page$p.json
   [ -s "$f" ] && continue
