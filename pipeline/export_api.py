@@ -19,7 +19,12 @@ was found (resolve_tmdb.py's tmdb_source). A rental's page is
 https://www.moviemadness.org/?rental=<slug>.
 
 DIR/index.json has the counts, the time of the newest change on the site
-that the files include, and the notice on whose data this is. Only files whose contents changed are written.
+that the files include, and the notice on whose data this is. Only files
+whose contents changed are written.
+
+Nothing is written, and it exits with an error, when the catalog has no
+rentals with an id or a tenth fewer than DIR/index.json says were there
+before: more likely a broken run than a real change. --force writes anyway.
 """
 import glob, html, json, os, re, sys
 
@@ -54,7 +59,8 @@ def rental(e):
     return {k: v for k, v in r.items() if v is not None}
 
 def main():
-    out = sys.argv[1] if len(sys.argv) > 1 else 'api'
+    args = [a for a in sys.argv[1:] if a != '--force']
+    out = args[0] if args else 'api'
     shards = {(kind, n): {} for kind in ('movie', 'tv') for n in range(SHARDS)}
     rentals = 0
     for f in glob.glob('catalog/page*.json'):
@@ -63,6 +69,9 @@ def main():
                 kind, i = e['tmdb'].split('/')
                 shards[kind, int(i) % SHARDS].setdefault(int(i), []).append(rental(e))
                 rentals += 1
+    before = json.load(open(f'{out}/index.json'))['rentals'] if os.path.exists(f'{out}/index.json') else 0
+    if '--force' not in sys.argv and (not rentals or rentals < 0.9 * before):
+        sys.exit(f'api: not written: {rentals} rentals with an id, {before} before (--force to write anyway)')
     order = {f: n for n, f in enumerate(FORMAT_ORDER)}
     written = 0
     for (kind, n), ids in shards.items():
