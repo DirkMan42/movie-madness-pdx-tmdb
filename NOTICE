@@ -1,0 +1,24 @@
+This project is two different things, and they are licensed differently.
+
+1. THE CODE (the scripts and supporting files)
+   is licensed under the MIT License. See LICENSE.
+
+2. THE CATALOG DATA that the code fetches, and any files generated from it
+   (including the TMDB-id lookup files written by export_api.py and
+   anything published from them), is NOT the author's to license and is NOT
+   covered by the MIT grant. It is derived from third parties and remains
+   subject to their terms:
+
+     - Rental titles, formats, shelf locations and other catalog listings
+       are the property of Movie Madness (moviemadness.org), a nonprofit
+       video store run by the Hollywood Theatre. This project is an
+       unaffiliated fan project, not endorsed by or connected with Movie
+       Madness.
+
+     - TMDB ids are found with The Movie Database (TMDB) API and are subject
+       to the TMDB Terms of Use (https://www.themoviedb.org/terms-of-use).
+       This product uses the TMDB API but is not endorsed or certified by
+       TMDB.
+
+   Reusing the code is free under the MIT License; reusing the data is your
+   responsibility to clear with its respective sources.
