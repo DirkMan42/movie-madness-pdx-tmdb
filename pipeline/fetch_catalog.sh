@@ -1,5 +1,5 @@
 #!/bin/bash
-mkdir -p "$(dirname "$0")/../data/catalog" && cd "$(dirname "$0")/../data/catalog"
+mkdir -p "$(dirname "$0")/../data/catalog" && cd "$(dirname "$0")/../data/catalog" || exit 1
 for p in $(seq 1 996); do
   f=page$p.json
   [ -s "$f" ] && continue

@@ -21,7 +21,7 @@ https://www.moviemadness.org/?rental=<slug>.
 DIR/index.json has the counts, the time of the newest change on the site
 that the files include, and the notice on whose data this is. Only files whose contents changed are written.
 """
-import glob, html, json, os, sys
+import glob, html, json, os, re, sys
 
 SHARDS = 1000
 NOTICE = ('Catalog listings are the property of Movie Madness (moviemadness.org); this is an unaffiliated '
@@ -40,9 +40,16 @@ def write_if_changed(f, data):
     os.replace(f + '.tmp', f)
     return 1
 
+def title_format(title):
+    """The format named last in a title's parentheses, for the few rentals the store gave none."""
+    named = [f for part in re.findall(r'\(([^)]*)\)', title) for f in FORMAT_ORDER
+             if re.sub(r'\W', '', f).lower() == re.sub(r'\W', '', part).lower()]
+    return named[-1] if named else None
+
 def rental(e):
-    r = {'id': e['id'], 'slug': e['slug'], 'title': html.unescape(e['title']['rendered']),
-         'format': (e['format'] or [None])[0], 'shelf': e.get('shelf'),
+    title = html.unescape(e['title']['rendered'])
+    r = {'id': e['id'], 'slug': e['slug'], 'title': title,
+         'format': (e['format'] or [title_format(title)])[0], 'shelf': e.get('shelf'),
          'display': e.get('temporary_shelf'), 'match': e['tmdb_source']}
     return {k: v for k, v in r.items() if v is not None}
 
