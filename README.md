@@ -31,7 +31,7 @@ NNN is `id % 1000`, zero-padded to three digits. All 2,000 files exist, so a fil
 | `format` | 4K UHD, Blu-Ray 3D, Blu-Ray, DVD, DVD-R, VHS or Book |
 | `shelf` | The permanent shelf, left out when not known |
 | `display` | A temporary shelf (New Arrival, Staff Picks, …), left out when it has none |
-| `match` | How the TMDB id was found: `poster`, `description`, `credits`, `edition`, `language`, `title` |
+| `match` | How the TMDB id was found: `poster`, `description`, `credits`, `edition`, `language`, `title`, or `manual` for our own corrections |
 
 About three quarters of the store's ~99,600 rentals have a TMDB id. A rental in the files is in the store's collection; that doesn't mean a copy is on the shelf today.
 
@@ -54,6 +54,7 @@ The Python scripts read and write the current folder, so run them from `data/`, 
 | `update_catalog.py` | Daily: only rentals added or changed since the last run |
 | `scrape_shelves.py`, `build_shelves.py` | The name-level shelf ("Hollywood Directors > SPIELBERG, STEVEN"), which the API lacks, from the site's search results |
 | `resolve_tmdb.py` | TMDB ids: from the store's cover image (a TMDB poster) where it has one, else by description, credits, language, or title and year. Ids whose TMDB titles are nothing like the rental's are dropped |
+| `overrides.csv` | Our own corrections, applied last: titles the store's data matches to the wrong film or to none, with the right TMDB id |
 | `export_api.py` | Writes `api/` |
 | `daily_update.sh` | Runs the daily steps in order |
 

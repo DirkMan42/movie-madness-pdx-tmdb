@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Finds the TMDB id behind each rental's poster and writes it to catalog/ as
 `tmdb`: "movie/201085", "tv/13859", or None, with `tmdb_source`: "poster",
-"description", "edition", "credits", "language" or "title".
+"description", "edition", "credits", "language", "title" or "manual".
 
 The store's covers are TMDB posters under their TMDB file names (`poster`,
 from fetch_media.py or update_catalog.py). TMDB can't look a poster up by
@@ -22,6 +22,10 @@ The store shows the wrong cover on a few percent of rentals, so every id is
 checked against the titles TMDB has for it (tmdb-titles.jsonl): an id whose
 titles are nothing like the rental's is dropped and kept as `tmdb_rejected`.
 
+The store's data is not the last word: overrides.csv, beside this script, lists
+titles it gets wrong or that can't be found from it, with the right TMDB id
+(tmdb_source "manual"). It is applied after everything else.
+
 Rentals with no usable cover are searched by title and settled by what else is
 known: the shelf's director or actor being in the credits (tmdb_source
 "credits"), the shelf's language with the year and a fitting title
@@ -39,6 +43,7 @@ looks up new posters. The TMDB token (API Read Access Token) is read from
 
   --max N    stop after N TMDB requests
   --retry    look up posters again that found nothing before
+  --retry-titles   search again only for the titles that found nothing before
 """
 import csv, difflib, fcntl, glob, html, json, os, re, sys, threading, time, unicodedata, urllib.error, urllib.parse, urllib.request
 from collections import defaultdict
@@ -79,12 +84,54 @@ COUNTRIES = {
 SEASON = re.compile(r'\b(season|series)\s*\d+|\b\d+(st|nd|rd|th)\s+season|\bcomplete\s+(series|season)'
                     r'|\b(season|series)\s+(one|two|three|four|five|six|seven|eight|nine|ten)\b|\bfinal\s+season', re.I)
 
+EPISODE = re.compile(r'\bEp\.\s*', re.I)
+# Among several results of one title and year: the only one from the very year needs
+# YEAR_VOTES TMDB votes; a clear favourite FAVOURITE votes and that many times the next one's.
+YEAR_VOTES, FAVOURITE, TIMES = 10, 300, 10
+
+def rental_years(e):
+    """The years a rental's film may be from: the catalog's, and any that staff put
+    in its title ("Departed, The (2006) (Blu-Ray)", which the catalog dates 2009,
+    the disc's year)."""
+    return list(dict.fromkeys([int(y) for y in e.get('year') or [] if y.isdigit()] + named_years(e)))
+
+def named_years(e):
+    """The years in a rental's title."""
+    return [int(y) for y in re.findall(r'\((\d{4})\b', html.unescape(e['title']['rendered'])) if 1880 <= int(y) <= 2100]
+
+OVERRIDES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'overrides.csv')
+
+def load_overrides():
+    """{title: [(year or None, tmdb or None)]} from overrides.csv, our own corrections
+    for where the store's data leads to the wrong film or to none. A row applies to
+    every rental of that title (compared without parentheses, case or punctuation),
+    and of that year when it gives one; a blank tmdb says the rental has no entry."""
+    rows = defaultdict(list)
+    if os.path.exists(OVERRIDES):
+        for r in csv.DictReader(open(OVERRIDES, newline='')):
+            if r.get('title'):
+                rows[plain(r['title'])].append((int(r['year']) if (r.get('year') or '').strip().isdigit() else None,
+                                                (r.get('tmdb') or '').strip() or None))
+    return rows
+
+def override(e, rows):
+    """(True, tmdb) when a row of overrides.csv covers this rental, else (False, None)."""
+    for year, tmdb in rows.get(edition_key(e)[0], ()):
+        if year is None or year in rental_years(e):
+            return True, tmdb
+    return False, None
+
 class Stop(Exception):
     pass
 
+def whole(title):
+    """A catalog title without what the store's 60-character limit cut short, a
+    parenthesis left open ("... (Limited Ed.) (DVD) (OOP"), or a trailing "OOP"."""
+    return re.sub(r'\s*(\([^)]*|\bOOP!*)\s*$', '', html.unescape(title))
+
 def queries(title):
     """Searches to try for one catalog title, most specific first."""
-    q = search_query(html.unescape(title))
+    q = search_query(whole(title))
     first = q.split('/')[0].strip()   # double features: the first film
     series = re.sub(r'\s+[–-]?\s*(Vol\.?|Volume|Season|Series|Set|Collection|Complete|Disc)\b.*', '', first, flags=re.I).strip(' –-')
     return [v for v in dict.fromkeys([q, first, series, re.sub(r'\s+\d{4}$', '', series)]) if v]
@@ -139,7 +186,7 @@ def title_fits(title, tmdb_titles):
     """Whether a catalog title is plausibly one of a TMDB entry's titles. The store
     shows the wrong cover on a few percent of rentals, and a poster match then
     finds the wrong film; those have titles nothing alike."""
-    t = html.unescape(title)
+    t = whole(title)
     parts = [t] + re.split(r'\s*/\s*', re.sub(r'\([^)]*\)', '', t))   # each half of a double feature
     ours = {loose(q) for part in parts for q in queries(part)} - {''}
     theirs = {loose(x) for x in tmdb_titles} - {''}
@@ -207,7 +254,7 @@ def lookup_key(e):
 
 def edition_key(e):
     """What editions of one film share: its title without the parentheses, and its year."""
-    return plain(re.sub(r'\([^)]*\)', '', html.unescape(e['title']['rendered']))), tuple(e['year'])
+    return plain(re.sub(r'\([^)]*\)', '', whole(e['title']['rendered']))), tuple(e['year'])
 
 def words(description):
     """A description for comparing; '' when too short to identify anything."""
@@ -221,7 +268,8 @@ def same_text(overview, texts):
                            and difflib.SequenceMatcher(None, t, o).ratio() >= 0.9 for t in texts)
 
 def source(how):
-    return {'title and year': 'title', 'description': 'description', 'credits': 'credits',
+    return {'title and year': 'title', 'alternative title': 'title', 'title and exact year': 'title',
+            'title, year and votes': 'title', 'description': 'description', 'credits': 'credits',
             'language': 'language'}.get(how, 'poster')
 
 def main():
@@ -307,25 +355,52 @@ def main():
     def title_rules(e, lacking):
         """(tmdb, how) for a rental with no usable cover, from a title search and what
         else is known about it. Each rule was checked against rentals with poster ids
-        and disagreed with under 2% of them:
+        and disagreed with 2% of them at most. Read by hand, about 1 in 20 of the
+        alternative-title matches among rentals with no other id were wrong; those
+        found go in overrides.csv.
           credits   the one result with the shelf's director or actor in its credits
           language  the one result in the shelf's language, within a year, whose title fits
           title and year  the one result with the same title, within a year
-        A title naming a season or series only matches shows; a result whose credits
+          alternative title  the same, by a title TMDB lists for it but doesn't show
+          title and exact year  of several, the only one from the very year
+          title, year and votes  of several films (or shows) from the very year, the one far better known
+        Between a film and shows of the same title and year, the film wins. A title
+        naming a season or series only matches shows; a result whose credits
         lack the shelf's person is out; and on a foreign shelf a result in another
         language only counts if it was made in that country, in which case TMDB's
         language is probably wrong and the third value says so. Results refused for
         lacking the shelf's person are added to `lacking`."""
-        found, years = {}, [int(y) for y in e.get('year') or [] if y.isdigit()]
-        for q in queries(e['title']['rendered']):
+        found, years = {}, rental_years(e)
+        asked = queries(e['title']['rendered'])
+        asked += [v for v in dict.fromkeys(EPISODE.sub('Episode ', q) for q in asked) if v not in asked]
+        for q in asked:
             for r in api('search/multi', query=q, include_adult='true').get('results', []):
                 if r.get('media_type') in ('movie', 'tv'):
                     found.setdefault(f'{r["media_type"]}/{r["id"]}', (q, r))
-        def near(r):
+            # The general search can bury a film under shows and people of the same
+            # name ("Pride And Prejudice", "Wall-e"); asking for films of its year finds it.
+            for y in () if SEASON.search(html.unescape(e['title']['rendered'])) else years:
+                for r in api('search/movie', query=q, year=y, include_adult='true').get('results', []):
+                    found.setdefault(f'movie/{r["id"]}', (q, r))
+        def year_of(r):
             y = (r.get('release_date') or r.get('first_air_date') or '')[:4]
-            return y.isdigit() and any(abs(int(y) - x) <= 1 for x in years)
+            return int(y) if y.isdigit() else None
+        def near(r):
+            return year_of(r) is not None and any(abs(year_of(r) - x) <= 1 for x in years)
+        def votes(r):
+            return r.get('vote_count') or 0
         def names(r):
             return [r[k] for k in ('title', 'name', 'original_title', 'original_name') if r.get(k)]
+        ours = {loose(q) for q in asked}
+        def film_first(hits):
+            """Of a film and shows of the same title around the same year, the film, when
+            it is the better known: a rental that could be either (or holds both cuts)
+            is filed under the film."""
+            films = [k for k in hits if k.startswith('movie/')]
+            same = all(near(found[k][1]) and ours & {loose(x) for x in names(found[k][1])} for k in hits)
+            # Not a film less known than the show: TMDB has stray film entries for miniseries.
+            known = films and votes(found[films[0]][1]) >= max(votes(found[k][1]) for k in hits)
+            return films if len(films) == 1 and len(hits) > 1 and same and known else hits
         # A title that names a season or series is a show, never a film of the same name.
         if SEASON.search(html.unescape(e['title']['rendered'])):
             found = {k: v for k, v in found.items() if k.startswith('tv/')}
@@ -334,6 +409,7 @@ def main():
             # A result without them is not this shelf's film, whatever its title.
             hits = [k for k in sorted(found, key=lambda k: not near(found[k][1]))[:5]
                     if credits_have(k, who) or lacking.add(k)]
+            hits = film_first(hits)
             if len(hits) == 1:
                 return hits[0], 'credits', None
         langs = shelf_languages(e)
@@ -342,8 +418,29 @@ def main():
                     and k not in lacking and title_fits(e['title']['rendered'], names(r))]
             if len(hits) == 1:
                 return hits[0], 'language', None
-        hits = [k for k, (q, r) in found.items() if near(r) and k not in lacking
-                and loose(q) in {loose(x) for x in names(r)}]
+        # The film itself, by title and year. TMDB may have it under another of its
+        # titles ("Star Wars" for "Star Wars Episode IV: A New Hope"), so failing an
+        # exact one, the best-known few results are checked against all of theirs.
+        left = [k for k, (q, r) in found.items() if near(r) and k not in lacking]
+        hits, how = [k for k in left if ours & {loose(x) for x in names(found[k][1])}], 'title and year'
+        if not hits:
+            # Only the title in full: cut down to a series' name ("Brotherhood" from
+            # "Brotherhood: Season 3") it is too often some other show's other title.
+            whole_title = {loose(asked[0]), loose(EPISODE.sub('Episode ', asked[0]))}
+            hits = [k for k in sorted(left, key=lambda k: -votes(found[k][1]))[:3]
+                    if whole_title & {loose(x) for x in tmdb_titles(api, k)}]
+            how = 'alternative title'
+        hits = film_first(hits)
+        if len(hits) > 1:
+            # Several of that title around that year, often a feature and a short: the
+            # only one from the very year, or of several from it the far better known.
+            ranked = sorted(hits, key=lambda k: -votes(found[k][1]))
+            that_year = [k for k in hits if year_of(found[k][1]) in (named_years(e) or years)]   # the title's year, if it has one
+            if len(that_year) == 1 and votes(found[that_year[0]][1]) == votes(found[ranked[0]][1]) >= YEAR_VOTES:
+                hits, how = that_year, 'title and exact year'
+            elif (ranked[0] in that_year and len({k.split('/')[0] for k in hits}) == 1
+                  and votes(found[ranked[0]][1]) >= max(FAVOURITE, TIMES * votes(found[ranked[1]][1]))):
+                hits, how = ranked[:1], 'title, year and votes'
         if len(hits) != 1:
             return None, None, None
         r = found[hits[0]][1]
@@ -360,7 +457,7 @@ def main():
                 'spoken': [l.get('iso_639_1') for l in d.get('spoken_languages', [])],
                 'title': d.get('title') or d.get('name'),
                 'year': (d.get('release_date') or d.get('first_air_date') or '')[:4]}
-        return hits[0], 'title and year', None
+        return hits[0], how, None
 
     def by_title(e):
         """title_rules' answer, with what to keep beside it: a likely TMDB error, and
@@ -460,7 +557,7 @@ def main():
     titled, refused = {}, {}   # a later line for the same key replaces an earlier one
     for r in load_jsonl(BY_TITLE):
         titled[r['key']], refused[r['key']] = (r['tmdb'], r['how']), set(r.get('lacking', ()))
-    todo = [k for k in groups if k not in titled or '--retry' in sys.argv and titled[k][0] is None]
+    todo = [k for k in groups if k not in titled or titled[k][0] is None and ('--retry' in sys.argv or '--retry-titles' in sys.argv)]
     log(f'{len(groups)} titles without an id; {len(todo)} to search for')
     found, pool = 0, ThreadPoolExecutor(WORKERS)
     searches = {pool.submit(by_title, groups[k]): k for k in todo}
@@ -485,7 +582,8 @@ def main():
     # Read the catalog again before writing: a long run may overlap the daily update.
     pages = catalog()
     rejected, copied, editions = assign(pages)
-    have = by_search = 0
+    have = by_search = fixed = 0
+    corrections = load_overrides()
     for f, es in pages.items():
         for e in es:
             tmdb, how = titled.get(lookup_key(e), (None, None)) if not e['tmdb'] else (None, None)
@@ -497,10 +595,14 @@ def main():
                 if tmdb not in refused.get(lookup_key(e), ()):
                     e['tmdb'], e['tmdb_source'] = tmdb, 'edition'
                     copied += 1
+            ours, tmdb = override(e, corrections)
+            if ours:   # our own correction, whatever the store's data led to
+                fixed += tmdb != e['tmdb']
+                e['tmdb'], e['tmdb_source'] = tmdb, 'manual' if tmdb else None
             have += bool(e['tmdb'])
         write_json(f, es)
     log(f'tmdb written to the catalog: {have} rentals have one ({copied} from another edition, {by_search} by title search); '
-        f'{rejected} dropped because the title is not one of the TMDB entry\'s')
+        f'{rejected} dropped because the title is not one of the TMDB entry\'s; {fixed} set by overrides.csv')
 
 if __name__ == '__main__':
     main()
