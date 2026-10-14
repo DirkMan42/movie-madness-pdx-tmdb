@@ -18,6 +18,15 @@ Staff Picks, ...); either is left out when not known. `match` is how the id
 was found (resolve_tmdb.py's tmdb_source). A rental's page is
 https://www.moviemadness.org/?rental=<slug>.
 
+DIR/unmatched.json lists the rentals with no TMDB id, by rental id, with the
+year and language that might help find one (null when the store gives none;
+several languages are joined with ", "), and `rejected`, the id that was
+found and dropped because its titles are nothing like the rental's:
+
+  [{"id": 27583, "slug": "...", "title": "Kiss Me Quick / House On Bare Mountain
+    (Special Edition DVD)", "format": "DVD", "shelf": "Adult Theme > Something
+    Weird", "year": "1962", "language": "English"}, ...]
+
 DIR/index.json has the counts, the time of the newest change on the site
 that the files include, and the notice on whose data this is. Only files
 whose contents changed are written.
@@ -58,17 +67,27 @@ def rental(e):
          'display': e.get('temporary_shelf'), 'match': e['tmdb_source']}
     return {k: v for k, v in r.items() if v is not None}
 
+def unmatched(e):
+    r = rental({**e, 'tmdb_source': None})
+    r['year'] = (e.get('year') or [None])[0]
+    r['language'] = ', '.join(e.get('language') or []) or None
+    if e.get('tmdb_rejected'):
+        r['rejected'] = e['tmdb_rejected']
+    return r
+
 def main():
     args = [a for a in sys.argv[1:] if a != '--force']
     out = args[0] if args else 'api'
     shards = {(kind, n): {} for kind in ('movie', 'tv') for n in range(SHARDS)}
-    rentals = 0
+    rentals, missing = 0, []
     for f in glob.glob('catalog/page*.json'):
         for e in json.load(open(f)):
             if e.get('tmdb'):
                 kind, i = e['tmdb'].split('/')
                 shards[kind, int(i) % SHARDS].setdefault(int(i), []).append(rental(e))
                 rentals += 1
+            else:
+                missing.append(unmatched(e))
     before = json.load(open(f'{out}/index.json'))['rentals'] if os.path.exists(f'{out}/index.json') else 0
     if '--force' not in sys.argv and (not rentals or rentals < 0.9 * before):
         sys.exit(f'api: not written: {rentals} rentals with an id, {before} before (--force to write anyway)')
@@ -78,13 +97,16 @@ def main():
         for rs in ids.values():
             rs.sort(key=lambda r: (order.get(r.get('format'), len(order)), r['id']))
         written += write_if_changed(f'{out}/tmdb/{kind}/{n:03}.json', {str(i): ids[i] for i in sorted(ids)})
+    missing.sort(key=lambda r: r['id'])
+    written += write_if_changed(f'{out}/unmatched.json', missing)
     state = 'catalog-updated.json'
     counts = {kind: sum(len(ids) for (k, _), ids in shards.items() if k == kind) for kind in ('movie', 'tv')}
     written += write_if_changed(f'{out}/index.json', {
         'updated': json.load(open(state))['modified'] if os.path.exists(state) else None,
-        'rentals': rentals, 'movie': counts['movie'], 'tv': counts['tv'], 'shards': SHARDS,
-        'files': 'tmdb/{movie|tv}/{id % shards, 3 digits}.json', 'notice': NOTICE})
-    print(f'api: {rentals} rentals under {counts["movie"]} films and {counts["tv"]} shows; {written} files written')
+        'rentals': rentals, 'movie': counts['movie'], 'tv': counts['tv'], 'unmatched': len(missing), 'shards': SHARDS,
+        'files': 'tmdb/{movie|tv}/{id % shards, 3 digits}.json', 'unmatched_file': 'unmatched.json',
+        'notice': NOTICE})
+    print(f'api: {rentals} rentals under {counts["movie"]} films and {counts["tv"]} shows, {len(missing)} without an id; {written} files written')
 
 if __name__ == '__main__':
     main()

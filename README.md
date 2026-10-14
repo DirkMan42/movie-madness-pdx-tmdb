@@ -14,6 +14,7 @@ They are served from GitHub Pages at `https://tjsander.github.io/movie-madness-p
 api/index.json                counts, time of the newest site change included, data notice
 api/tmdb/movie/NNN.json       every TMDB film id whose last three digits are NNN
 api/tmdb/tv/NNN.json          the same for shows
+api/unmatched.json            the rentals with no TMDB id
 ```
 
 NNN is `id % 1000`, zero-padded to three digits. All 2,000 files exist, so a film the store doesn't have is a missing key, not a 404. The Matrix is TMDB film 603, so it is key `"603"` in `tmdb/movie/603.json`:
@@ -32,6 +33,8 @@ NNN is `id % 1000`, zero-padded to three digits. All 2,000 files exist, so a fil
 | `shelf` | The permanent shelf, left out when not known |
 | `display` | A temporary shelf (New Arrival, Staff Picks, …), left out when it has none |
 | `match` | How the TMDB id was found: `poster`, `description`, `credits`, `edition`, `language`, `title`, or `manual` for our own corrections |
+
+`unmatched.json` is one list, sorted by rental id, of the rentals we found no TMDB id for, with the same fields less `match`, plus `year` and `language` (`null` when the store gives none; several languages joined with `, `) and `rejected` (`"movie/123"`) when an id was found but dropped because its titles are nothing like the rental's. It's the place to look for titles to add to `overrides.csv`.
 
 About three quarters of the store's ~99,600 rentals have a TMDB id. A rental in the files is in the store's collection; that doesn't mean a copy is on the shelf today.
 
