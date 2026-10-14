@@ -8,7 +8,7 @@ It was built for [mmboxmonkey](https://github.com/tjsander/mmboxmonkey), a users
 
 ## The lookup files
 
-`pipeline/export_api.py` writes them to `api/`:
+They are served from GitHub Pages at `https://tjsander.github.io/movie-madness-pdx-tmdb/` and updated once a day. `pipeline/export_api.py` writes them to `api/`:
 
 ```
 api/index.json                counts, time of the newest site change included, data notice
@@ -40,7 +40,7 @@ About three quarters of the store's ~99,600 rentals have a TMDB id. A rental in 
 ```
 pipeline/   the scripts
 data/       the fetched catalog and everything worked out from it (ignored by git)
-api/        the lookup files, written by export_api.py (ignored by git)
+api/        the lookup files, written by export_api.py: a worktree of the gh-pages branch
 ```
 
 The Python scripts read and write the current folder, so run them from `data/`, e.g. `cd data && python3 ../pipeline/resolve_tmdb.py`. The shell scripts go there themselves.
@@ -56,6 +56,7 @@ The Python scripts read and write the current folder, so run them from `data/`, 
 | `resolve_tmdb.py` | TMDB ids: from the store's cover image (a TMDB poster) where it has one, else by description, credits, language, or title and year. Ids whose TMDB titles are nothing like the rental's are dropped |
 | `overrides.csv` | Our own corrections, applied last: titles the store's data matches to the wrong film or to none, with the right TMDB id |
 | `export_api.py` | Writes `api/` |
+| `publish.sh` | Commits what changed in `api/` to the `gh-pages` branch and pushes it |
 | `daily_update.sh` | Runs the daily steps in order |
 
 `resolve_tmdb.py` needs a TMDB API Read Access Token in `~/.config/mmboxmonkey/tmdb-token`.
