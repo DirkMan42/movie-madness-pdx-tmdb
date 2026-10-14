@@ -58,6 +58,7 @@ The Python scripts read and write the current folder, so run them from `data/`, 
 | `scrape_shelves.py`, `build_shelves.py` | The name-level shelf ("Hollywood Directors > SPIELBERG, STEVEN"), which the API lacks, from the site's search results |
 | `resolve_tmdb.py` | TMDB ids: from the store's cover image (a TMDB poster) where it has one, else by description, credits, language, or title and year. Ids whose TMDB titles are nothing like the rental's are dropped |
 | `overrides.csv` | Our own corrections, applied last: titles the store's data matches to the wrong film or to none, with the right TMDB id |
+| `llm_match.py` | Pilot: searches TMDB for a sample of rentals still without an id and has a model (Claude Haiku) pick from the results, for review before anything goes into `overrides.csv`. Needs the `anthropic` package and an API key; not part of the daily run |
 | `export_api.py` | Writes `api/` |
 | `publish.sh` | Commits what changed in `api/` to the `gh-pages` branch and pushes it |
 | `daily_update.sh` | Runs the daily steps in order |
